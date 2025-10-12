@@ -14,7 +14,7 @@ simulstreaming_whisper = "simulstreaming_whisper:simul_asr_factory"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["whisper_streaming*", "simul_whisper*"]
+include = ["whisper_streaming*", "simul_whisper*", "token_buffer.py"]
 
 #[tool.setuptools.packages.find]
 #where = ["."]
