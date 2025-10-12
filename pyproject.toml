@@ -3,15 +3,18 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "public_repo"
+name = "SimulStreaming"
 version = "0.1.0"
 description = "SimulStreaming"
 requires-python = ">=3.8"
-dependencies = ["librosa", "tiktoken", "tqdm"]
+dependencies = ["librosa", "tiktoken", "tqdm", "numpy<2"]
+
+[project.scripts]
+simulstreaming_whisper = "simulstreaming_whisper:simul_asr_factory"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["whisper_streaming", "simul_whisper"]
 
 [dependency-groups]
-gpu = ["torchaudio"]
+gpu = ["torchaudio", "torch"]
