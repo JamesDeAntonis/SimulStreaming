@@ -1,5 +1,5 @@
-import os
 from functools import lru_cache
+from importlib import resources
 from subprocess import CalledProcessError, run
 from typing import Optional, Union
 
@@ -102,7 +102,9 @@ def mel_filters(device, n_mels: int) -> torch.Tensor:
     """
     assert n_mels in {80, 128}, f"Unsupported n_mels: {n_mels}"
 
-    filters_path = os.path.join(os.path.dirname(__file__), "assets", "mel_filters.npz")
+    filters_path = resources.files("simul_whisper.whisper").joinpath(
+        "assets/mel_filters.npz"
+    )
     with np.load(filters_path, allow_pickle=False) as f:
         return torch.from_numpy(f[f"mel_{n_mels}"]).to(device)
 
