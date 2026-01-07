@@ -167,7 +167,12 @@ def main_simulation_from_file(factory, add_args=None):
         except AssertionError as e:
             logger.error(f"assertion error: {repr(e)}")
         else:
-            output_transcript(o)
+            # NOTE this is a hotfix by jamie
+            if len(o) == 3:
+                output_transcript(o)
+
+            else:
+                logger.error(f"`o` had the wrong shape {o=}")
         now = None
     elif args.comp_unaware:  # computational unaware mode 
         end = beg + min_chunk
@@ -180,7 +185,11 @@ def main_simulation_from_file(factory, add_args=None):
                 logger.error(f"assertion error: {repr(e)}")
                 pass
             else:
-                output_transcript(o, now=end)
+                if len(o) == 3:
+                    output_transcript(o, now=end)
+
+                else:
+                    logger.error(f"`o` had the wrong shape {o=}")
 
             logger.info(f"## last processed {end:.2f}s")
 
@@ -212,7 +221,12 @@ def main_simulation_from_file(factory, add_args=None):
                 logger.error(f"assertion error: {e}")
                 pass
             else:
-                output_transcript(o)
+                if len(o) == 3:
+                    output_transcript(o)
+
+                else:
+                    logger.error(f"`o` had the wrong shape {o=}")
+
             now = time.time() - start
             logger.info(f"## last processed {end:.2f} s, now is {now:.2f}, the latency is {now-end:.2f}")
 
@@ -221,4 +235,8 @@ def main_simulation_from_file(factory, add_args=None):
         now = None
 
     o = online.finish()
-    output_transcript(o, now=now)
+    if len(o) == 3:
+        output_transcript(o, now=now)
+
+    else:
+        logger.error(f"`o` had the wrong shape {o=}")
