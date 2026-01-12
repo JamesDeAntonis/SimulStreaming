@@ -43,6 +43,56 @@ class PaddedAlignAttWhisper:
         self.model = load_model(name=model_name, download_root=model_path)
 
         logger.info(f"Model dimensions: {self.model.dims}")
+        
+        # Performance optimizations
+        # Set model to evaluation mode (important for batch norm, dropout, etc.)
+        self.model.eval()
+        
+        # Enable cuDNN benchmarking for consistent input sizes (GPU only)
+        if cfg.enable_cudnn_benchmark and torch.backends.cudnn.is_available():
+            torch.backends.cudnn.benchmark = True
+            logger.info("Enabled cuDNN benchmarking for faster inference")
+        
+        # Half precision (FP16/BF16) for faster inference on GPU
+        use_half = cfg.use_half_precision
+        if use_half is None:
+            # Auto-detect: use half precision on CUDA devices
+            use_half = self.model.device.type == "cuda"
+        
+        if use_half and self.model.device.type == "cuda":
+            # Use bfloat16 if available (better numerical stability), otherwise float16
+            if torch.cuda.is_bf16_supported():
+                dtype = torch.bfloat16
+                logger.info("Using bfloat16 precision for faster inference")
+            else:
+                dtype = torch.float16
+                logger.info("Using float16 precision for faster inference")
+            self.model = self.model.to(dtype)
+            self.dtype = dtype
+        else:
+            self.dtype = torch.float32
+            if use_half:
+                logger.warning("Half precision requested but not available on CPU, using float32")
+        
+        # torch.compile() for faster inference (PyTorch 2.0+)
+        # Note: Only compile the encoder, not the decoder. The decoder has variable input shapes:
+        # - First pass: full token history (many tokens)
+        # - Subsequent passes: only the last token (shape [batch, 1])
+        # This variable shape makes compilation inefficient for the decoder.
+        if cfg.use_compile:
+            try:
+                # Check if torch.compile is available (PyTorch 2.0+)
+                if hasattr(torch, 'compile'):
+                    try:
+                        # Only compile the encoder - it has consistent input shapes (mel spectrograms)
+                        self.model.encoder = torch.compile(self.model.encoder, mode="reduce-overhead")
+                        logger.info("Compiled model encoder with torch.compile() for faster inference")
+                    except Exception as e:
+                        logger.warning(f"torch.compile() failed: {e}. Continuing without compilation.")
+                else:
+                    logger.warning("torch.compile() not available (requires PyTorch 2.0+). Continuing without compilation.")
+            except Exception as e:
+                logger.warning(f"Error during torch.compile(): {e}. Continuing without compilation.")
 
         self.decode_options = DecodingOptions(
             language = cfg.language, 
@@ -355,6 +405,9 @@ class PaddedAlignAttWhisper:
                                             device=self.model.device).unsqueeze(0)
         # trim to 3000
         mel = pad_or_trim(mel_padded, N_FRAMES)
+        # Convert to model dtype for faster inference (if using half precision)
+        if hasattr(self, 'dtype'):
+            mel = mel.to(self.dtype)
 
         # the len of actual audio
         content_mel_len = int((mel_padded.shape[2] - mel.shape[2])/2)
