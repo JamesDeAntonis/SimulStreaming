@@ -485,9 +485,10 @@ class PaddedAlignAttWhisper:
 
             if new_segment and self.tokenizer.no_speech is not None:
                 probs_at_sot = logits[:, self.sot_index, :].float().softmax(dim=-1)
-                no_speech_probs = probs_at_sot[:, self.tokenizer.no_speech].tolist()
-                generation["no_speech_prob"] = no_speech_probs[0]
-                if no_speech_probs[0] > self.cfg.nonspeech_prob:
+                # Use tensor operation instead of .tolist() to avoid GPU sync
+                no_speech_prob = probs_at_sot[:, self.tokenizer.no_speech][0].item()
+                generation["no_speech_prob"] = no_speech_prob
+                if no_speech_prob > self.cfg.nonspeech_prob:
                     generation["no_speech"] = True
                     logger.info("no speech, stop")
                     break
@@ -505,11 +506,14 @@ class PaddedAlignAttWhisper:
 
             current_tokens, completed = self.token_decoder.update(current_tokens, logits, sum_logprobs)
             generation_progress_loop.append(("beam_tokens",Tokens(current_tokens[:,-1].clone())))
-            generation_progress_loop.append(("sum_logprobs",sum_logprobs.tolist()))
+            # Store tensor instead of .tolist() - convert only if needed later
+            generation_progress_loop.append(("sum_logprobs",sum_logprobs.clone()))
             generation_progress_loop.append(("completed",completed))
 
-            logger.debug(f"Decoding completed: {completed}, sum_logprobs: {sum_logprobs.tolist()}, tokens: ")
-            self.debug_print_tokens(current_tokens)
+            # Only convert to list if DEBUG logging is enabled (avoid GPU sync otherwise)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Decoding completed: {completed}, sum_logprobs: {sum_logprobs.tolist()}, tokens: ")
+                self.debug_print_tokens(current_tokens)
 
 
             # if self.decoder_type == "beam":
@@ -553,8 +557,11 @@ class PaddedAlignAttWhisper:
 
             # for each beam, the most attended frame is:
             most_attended_frames = torch.argmax(attn_of_alignment_heads[:,-1,:], dim=-1)
-            generation_progress_loop.append(("most_attended_frames",most_attended_frames.clone().tolist()))
-            logger.debug(str(most_attended_frames.tolist()) + " most att frames")
+            # Store tensor instead of .tolist() - convert only if needed later
+            generation_progress_loop.append(("most_attended_frames",most_attended_frames.clone()))
+            # Only convert to list if DEBUG logging is enabled (avoid GPU sync otherwise)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(str(most_attended_frames.tolist()) + " most att frames")
 
             most_attended_frame = most_attended_frames[0].item()
 
