@@ -293,8 +293,13 @@ class PaddedAlignAttWhisper:
             current_tokens = torch.cat(toks, dim=1)
         else:
             current_tokens = toks[0]
-        logger.debug("debug print current_tokens:")
-        self.debug_print_tokens(current_tokens)
+        
+        # Removed debug_print_tokens() call - it was causing GPU synchronization
+        # via .tolist() which was taking ~66ms per call
+        # If debugging is needed, uncomment below but be aware of performance cost
+        # logger.debug("debug print current_tokens:")
+        # self.debug_print_tokens(current_tokens)
+        
         return current_tokens
 
 
