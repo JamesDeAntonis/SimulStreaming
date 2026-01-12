@@ -1,5 +1,6 @@
 # This code was originally in simul_whisper/transcriber/simul_whisper.py . It is adapted a lot for SimulStreaming.
 
+import time
 import os
 import logging
 
@@ -43,6 +44,56 @@ class PaddedAlignAttWhisper:
         self.model = load_model(name=model_name, download_root=model_path)
 
         logger.info(f"Model dimensions: {self.model.dims}")
+        
+        # Performance optimizations
+        # Set model to evaluation mode (important for batch norm, dropout, etc.)
+        self.model.eval()
+        
+        # Enable cuDNN benchmarking for consistent input sizes (GPU only)
+        if cfg.enable_cudnn_benchmark and torch.backends.cudnn.is_available():
+            torch.backends.cudnn.benchmark = True
+            logger.info("Enabled cuDNN benchmarking for faster inference")
+        
+        # Half precision (FP16/BF16) for faster inference on GPU
+        use_half = cfg.use_half_precision
+        if use_half is None:
+            # Auto-detect: use half precision on CUDA devices
+            use_half = self.model.device.type == "cuda"
+        
+        if use_half and self.model.device.type == "cuda":
+            # Use bfloat16 if available (better numerical stability), otherwise float16
+            if torch.cuda.is_bf16_supported():
+                dtype = torch.bfloat16
+                logger.info("Using bfloat16 precision for faster inference")
+            else:
+                dtype = torch.float16
+                logger.info("Using float16 precision for faster inference")
+            self.model = self.model.to(dtype)
+            self.dtype = dtype
+        else:
+            self.dtype = torch.float32
+            if use_half:
+                logger.warning("Half precision requested but not available on CPU, using float32")
+        
+        # torch.compile() for faster inference (PyTorch 2.0+)
+        # Note: Only compile the encoder, not the decoder. The decoder has variable input shapes:
+        # - First pass: full token history (many tokens)
+        # - Subsequent passes: only the last token (shape [batch, 1])
+        # This variable shape makes compilation inefficient for the decoder.
+        if cfg.use_compile:
+            try:
+                # Check if torch.compile is available (PyTorch 2.0+)
+                if hasattr(torch, 'compile'):
+                    try:
+                        # Only compile the encoder - it has consistent input shapes (mel spectrograms)
+                        self.model.encoder = torch.compile(self.model.encoder, mode="reduce-overhead")
+                        logger.info("Compiled model encoder with torch.compile() for faster inference")
+                    except Exception as e:
+                        logger.warning(f"torch.compile() failed: {e}. Continuing without compilation.")
+                else:
+                    logger.warning("torch.compile() not available (requires PyTorch 2.0+). Continuing without compilation.")
+            except Exception as e:
+                logger.warning(f"Error during torch.compile(): {e}. Continuing without compilation.")
 
         self.decode_options = DecodingOptions(
             language = cfg.language, 
@@ -243,8 +294,13 @@ class PaddedAlignAttWhisper:
             current_tokens = torch.cat(toks, dim=1)
         else:
             current_tokens = toks[0]
-        logger.debug("debug print current_tokens:")
-        self.debug_print_tokens(current_tokens)
+
+        # Removed debug_print_tokens() call - it was causing GPU synchronization
+        # via .tolist() which was taking ~66ms per call
+        # If debugging is needed, uncomment below but be aware of performance cost
+        # logger.debug("debug print current_tokens:")
+        # self.debug_print_tokens(current_tokens)
+        
         return current_tokens
 
 
@@ -331,6 +387,8 @@ class PaddedAlignAttWhisper:
 
     @torch.no_grad()
     def infer(self, is_last=False):
+        print("**** INFER CALL")
+        t0 = time.time()
         new_segment = True
         if len(self.segments) == 0:
             logger.debug("No segments, nothing to do")
@@ -355,12 +413,17 @@ class PaddedAlignAttWhisper:
                                             device=self.model.device).unsqueeze(0)
         # trim to 3000
         mel = pad_or_trim(mel_padded, N_FRAMES)
+        # Convert to model dtype for faster inference (if using half precision)
+        if hasattr(self, 'dtype'):
+            mel = mel.to(self.dtype)
 
         # the len of actual audio
         content_mel_len = int((mel_padded.shape[2] - mel.shape[2])/2)
 
         # encode
+        print(f"Before encoder: {round(time.time() - t0, 3)}s")
         encoder_feature = self.model.encoder(mel)
+        print(f"After encoder: {round(time.time() - t0, 3)}s")
 
 #        logger.debug(f"Encoder feature shape: {encoder_feature.shape}")
 #        if mel.shape[-2:] != (self.model.dims.n_audio_ctx, self.model.dims.n_audio_state):
@@ -377,10 +440,15 @@ class PaddedAlignAttWhisper:
             self.init_tokens()
             logger.info(f"Tokenizer language: {self.tokenizer.language}, {self.tokenizer.sot_sequence_including_notimestamps}")
 
+        print(f"After language {round(time.time() - t0, 3)}s")
+
         self.trim_context()
+        print(f"After trim context {round(time.time() - t0, 3)}s")
         current_tokens = self._current_tokens()
+        print(f"After current tokens {round(time.time() - t0, 3)}s")
 #        
         fire_detected = self.fire_at_boundary(encoder_feature[:, :content_mel_len, :])
+        print(f"After fire {round(time.time() - t0, 3)}s")
 
 
         ####################### Decoding loop
@@ -421,15 +489,19 @@ class PaddedAlignAttWhisper:
                 # only need to use the last token except in the first forward pass
                 tokens_for_logits = current_tokens[:,-1:]
 
+            print(f"Calling logits with shape {tokens_for_logits.shape}: {round(time.time() - t0, 3)}")
+
             logits = self.logits(tokens_for_logits, encoder_feature) # B, len(tokens), token dict size
+            print(f"Done calling logits: {round(time.time() - t0, 3)}")
             if new_segment:
                 generation["logits_starting"] = Logits(logits[:,:,:])
 
             if new_segment and self.tokenizer.no_speech is not None:
                 probs_at_sot = logits[:, self.sot_index, :].float().softmax(dim=-1)
-                no_speech_probs = probs_at_sot[:, self.tokenizer.no_speech].tolist()
-                generation["no_speech_prob"] = no_speech_probs[0]
-                if no_speech_probs[0] > self.cfg.nonspeech_prob:
+                # Use tensor operation instead of .tolist() to avoid GPU sync
+                no_speech_prob = probs_at_sot[:, self.tokenizer.no_speech][0].item()
+                generation["no_speech_prob"] = no_speech_prob
+                if no_speech_prob > self.cfg.nonspeech_prob:
                     generation["no_speech"] = True
                     logger.info("no speech, stop")
                     break
@@ -447,11 +519,14 @@ class PaddedAlignAttWhisper:
 
             current_tokens, completed = self.token_decoder.update(current_tokens, logits, sum_logprobs)
             generation_progress_loop.append(("beam_tokens",Tokens(current_tokens[:,-1].clone())))
-            generation_progress_loop.append(("sum_logprobs",sum_logprobs.tolist()))
+            # Store tensor instead of .tolist() - convert only if needed later
+            generation_progress_loop.append(("sum_logprobs",sum_logprobs.clone()))
             generation_progress_loop.append(("completed",completed))
 
-            logger.debug(f"Decoding completed: {completed}, sum_logprobs: {sum_logprobs.tolist()}, tokens: ")
-            self.debug_print_tokens(current_tokens)
+            # Only convert to list if DEBUG logging is enabled (avoid GPU sync otherwise)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"Decoding completed: {completed}, sum_logprobs: {sum_logprobs.tolist()}, tokens: ")
+                self.debug_print_tokens(current_tokens)
 
 
             # if self.decoder_type == "beam":
@@ -495,8 +570,11 @@ class PaddedAlignAttWhisper:
 
             # for each beam, the most attended frame is:
             most_attended_frames = torch.argmax(attn_of_alignment_heads[:,-1,:], dim=-1)
-            generation_progress_loop.append(("most_attended_frames",most_attended_frames.clone().tolist()))
-            logger.debug(str(most_attended_frames.tolist()) + " most att frames")
+            # Store tensor instead of .tolist() - convert only if needed later
+            generation_progress_loop.append(("most_attended_frames",most_attended_frames.clone()))
+            # Only convert to list if DEBUG logging is enabled (avoid GPU sync otherwise)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(str(most_attended_frames.tolist()) + " most att frames")
 
             most_attended_frame = most_attended_frames[0].item()
 
@@ -539,6 +617,8 @@ class PaddedAlignAttWhisper:
                     self.tokenizer.decode([current_tokens[i, -1].item()])
                 ))
 
+            print(f"Forward step: {round(time.time() - t0, 3)}s")
+
 #        for k,v in generation.items():
 #            print(k,v,file=sys.stderr)
 #        for x in generation_progress:
@@ -549,6 +629,7 @@ class PaddedAlignAttWhisper:
         #    sys.exit(1)
         ####################### End of decoding loop
 
+        print(f"End: {round(time.time() - t0, 3)}s")
         logger.info("End of decoding loop")
 
         # if attn_of_alignment_heads is not None:

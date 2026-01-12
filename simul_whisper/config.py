@@ -18,6 +18,11 @@ class SimulWhisperConfig:
     max_context_tokens: int = field(default=None)
 
     logdir: str = field(default="logdir", metadata={"help": "Directory to save audio segments and tokens for debugging purposes."})
+    
+    # Performance optimization options
+    use_compile: bool = field(default=True, metadata={"help": "Use torch.compile() for faster inference (PyTorch 2.0+). Can provide 10-30% speedup."})
+    use_half_precision: bool = field(default=None, metadata={"help": "Use float16/bfloat16 for faster inference on GPU. None = auto-detect based on device."})
+    enable_cudnn_benchmark: bool = field(default=True, metadata={"help": "Enable cuDNN benchmarking for consistent input sizes (can speed up on GPU)."})
 
 @dataclass
 class AlignAttConfig(SimulWhisperConfig):

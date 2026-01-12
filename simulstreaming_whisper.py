@@ -100,6 +100,26 @@ def simulwhisper_args(parser):
         help="Max context tokens for the model. Default is 0.",
     )
 
+    group = parser.add_argument_group("Performance optimizations")
+    group.add_argument(
+        "--use-compile",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use torch.compile() for faster inference (PyTorch 2.0+). Can provide 10-30%% speedup. Default: True.",
+    )
+    group.add_argument(
+        "--use-half-precision",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Use float16/bfloat16 for faster inference on GPU. Default: auto-detect based on device.",
+    )
+    group.add_argument(
+        "--enable-cudnn-benchmark",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable cuDNN benchmarking for consistent input sizes (can speed up on GPU). Default: True.",
+    )
+
 
 def simul_asr_factory(args):
     logger.setLevel(args.log_level)
@@ -135,6 +155,10 @@ def simul_asr_factory(args):
             "logdir",
         ]
     }
+    # Add optimization options (convert from command-line format to config format)
+    a["use_compile"] = args.use_compile
+    a["use_half_precision"] = args.use_half_precision
+    a["enable_cudnn_benchmark"] = args.enable_cudnn_benchmark
     a["language"] = args.lan
     a["segment_length"] = args.min_chunk_size
     a["decoder_type"] = decoder
@@ -168,6 +192,9 @@ class SimulWhisperASR(ASRBase):
         static_init_prompt,
         max_context_tokens,
         logdir,
+        use_compile=True,
+        use_half_precision=None,
+        enable_cudnn_benchmark=True,
     ):
         cfg = AlignAttConfig(
             model_path=model_path,
@@ -185,6 +212,9 @@ class SimulWhisperASR(ASRBase):
             max_context_tokens=max_context_tokens,
             static_init_prompt=static_init_prompt,
             logdir=logdir,
+            use_compile=use_compile,
+            use_half_precision=use_half_precision,
+            enable_cudnn_benchmark=enable_cudnn_benchmark,
         )
         logger.info(f"Language: {language}")
         self.model = PaddedAlignAttWhisper(cfg)
