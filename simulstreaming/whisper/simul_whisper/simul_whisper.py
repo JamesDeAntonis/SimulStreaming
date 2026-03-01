@@ -67,7 +67,10 @@ class PaddedAlignAttWhisper:
 
         if use_half and self.model.device.type == "cuda":
             # Use bfloat16 if available (better numerical stability), otherwise float16
-            if torch.cuda.is_bf16_supported():
+            if (
+                torch.cuda.is_bf16_supported()
+                and torch.cuda.get_device_capability()[0] >= 8
+            ):
                 dtype = torch.bfloat16
                 logger.info("Using bfloat16 precision for faster inference")
             else:
