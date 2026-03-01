@@ -331,9 +331,9 @@ class Tokenizer:
 
 @lru_cache(maxsize=None)
 def get_encoding(name: str = "gpt2", num_languages: int = 99):
-    vocab_path = resources.files("simul_whisper.whisper").joinpath(
-        f"assets/{name}.tiktoken"
-    )
+    vocab_path = resources.files(
+        "simulstreaming.whisper.simul_whisper.whisper"
+    ).joinpath(f"assets/{name}.tiktoken")
     ranks = {
         base64.b64decode(token): int(rank)
         for token, rank in (line.split() for line in open(vocab_path) if line)

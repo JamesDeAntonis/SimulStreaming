@@ -17,7 +17,7 @@ where = ["."]
 include = ["simulstreaming*"]
 
 [tool.setuptools.package-data]
-"simul_whisper.whisper" = ["assets/*"]
+"simulstreaming.whisper.simul_whisper.whisper" = ["assets/*"]
 
 
 ##[tool.setuptools.packages.find]
